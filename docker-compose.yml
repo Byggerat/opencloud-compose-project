@@ -1,0 +1,209 @@
+# OpenCloud self-contained stack
+#
+# Services exposed on localhost (proxied by SWAG):
+#   opencloud     → 127.0.0.1:9200
+#   collaboration → 127.0.0.1:9300  (WOPI server)
+#   collabora     → 127.0.0.1:9980
+#   radicale      → internal only (proxied by opencloud)
+
+services:
+  opencloud:
+    image: ${OC_DOCKER_IMAGE:-opencloudeu/opencloud-rolling}:${OC_DOCKER_TAG:-latest}
+    container_name: opencloud
+    environment:
+      OC_URL: https://${OC_DOMAIN:-cloud.example.com}
+      OC_LOG_LEVEL: ${LOG_LEVEL:-info}
+      OC_LOG_COLOR: "${LOG_PRETTY:-false}"
+      OC_LOG_PRETTY: "${LOG_PRETTY:-false}"
+      # do not use SSL between the reverse proxy and OpenCloud
+      PROXY_TLS: "false"
+      # bind to all interfaces so the host port mapping works
+      PROXY_HTTP_ADDR: "0.0.0.0:9200"
+      # INSECURE: set to true only if your reverse proxy uses self-signed certs
+      OC_INSECURE: "${INSECURE:-false}"
+      # basic auth (not recommended, but needed for WebDAV clients without OIDC support)
+      PROXY_ENABLE_BASIC_AUTH: "${PROXY_ENABLE_BASIC_AUTH:-false}"
+      # demo users
+      IDM_CREATE_DEMO_USERS: "${DEMO_USERS:-false}"
+      # admin password (set in .env before first start)
+      IDM_ADMIN_PASSWORD: "${INITIAL_ADMIN_PASSWORD}"
+      # email server (optional)
+      NOTIFICATIONS_SMTP_HOST: "${SMTP_HOST}"
+      NOTIFICATIONS_SMTP_PORT: "${SMTP_PORT}"
+      NOTIFICATIONS_SMTP_SENDER: "${SMTP_SENDER:-OpenCloud Notifications <notifications@cloud.opencloud.test>}"
+      NOTIFICATIONS_SMTP_USERNAME: "${SMTP_USERNAME}"
+      NOTIFICATIONS_SMTP_PASSWORD: "${SMTP_PASSWORD}"
+      NOTIFICATIONS_SMTP_INSECURE: "${SMTP_INSECURE:-false}"
+      NOTIFICATIONS_SMTP_AUTHENTICATION: "${SMTP_AUTHENTICATION}"
+      NOTIFICATIONS_SMTP_ENCRYPTION: "${SMTP_TRANSPORT_ENCRYPTION:-none}"
+      FRONTEND_ARCHIVER_MAX_SIZE: "10000000000"
+      FRONTEND_CHECK_FOR_UPDATES: "${CHECK_FOR_UPDATES:-true}"
+      PROXY_CSP_CONFIG_FILE_LOCATION: /etc/opencloud/csp.yaml
+      # enable to allow using the banned passwords list
+      OC_PASSWORD_POLICY_BANNED_PASSWORDS_LIST: banned-password-list.txt
+      # public share password policy
+      OC_SHARING_PUBLIC_SHARE_MUST_HAVE_PASSWORD: "${OC_SHARING_PUBLIC_SHARE_MUST_HAVE_PASSWORD:-true}"
+      OC_SHARING_PUBLIC_WRITEABLE_SHARE_MUST_HAVE_PASSWORD: "${OC_SHARING_PUBLIC_WRITEABLE_SHARE_MUST_HAVE_PASSWORD:-false}"
+      OC_PASSWORD_POLICY_DISABLED: "${OC_PASSWORD_POLICY_DISABLED:-false}"
+      OC_PASSWORD_POLICY_MIN_CHARACTERS: "${OC_PASSWORD_POLICY_MIN_CHARACTERS:-8}"
+      OC_PASSWORD_POLICY_MIN_LOWERCASE_CHARACTERS: "${OC_PASSWORD_POLICY_MIN_LOWERCASE_CHARACTERS:-1}"
+      OC_PASSWORD_POLICY_MIN_UPPERCASE_CHARACTERS: "${OC_PASSWORD_POLICY_MIN_UPPERCASE_CHARACTERS:-1}"
+      OC_PASSWORD_POLICY_MIN_DIGITS: "${OC_PASSWORD_POLICY_MIN_DIGITS:-1}"
+      OC_PASSWORD_POLICY_MIN_SPECIAL_CHARACTERS: "${OC_PASSWORD_POLICY_MIN_SPECIAL_CHARACTERS:-1}"
+      # default UI language; language code (ISO 639-1, e.g. de, en, fr); leave empty for English
+      OC_DEFAULT_LANGUAGE: ${DEFAULT_LANGUAGE}
+      # Collabora / weboffice integration
+      COLLABORA_DOMAIN: ${COLLABORA_DOMAIN:-collabora.example.com}
+      # expose nats and the reva gateway for the collaboration service
+      MICRO_REGISTRY_ADDRESS: 127.0.0.1:9233
+      NATS_NATS_HOST: 0.0.0.0
+      NATS_NATS_PORT: 9233
+      GATEWAY_GRPC_ADDR: 0.0.0.0:9142
+      # make collabora the secure view app
+      FRONTEND_APP_HANDLER_SECURE_VIEW_APP_ADDR: eu.opencloud.api.collaboration
+      GRAPH_AVAILABLE_ROLES: "b1e2218d-eef8-4d4c-b82d-0f1a1b48f3b5,a8d5fe5e-96e3-418d-825b-534dbdf22b99,fb6c3e19-e378-47e5-b277-9732f9de6e21,58c63c02-1d89-4572-916a-870abc5a1b7d,2d00ce52-1fc2-4dbc-8b95-a73b73395f5a,1c996275-f1c9-4e71-abdf-a42f6495e960,312c0871-5ef7-4b3a-85b6-0e4074c64049,aa97fe03-7980-45ac-9e50-b325749fd7e6"
+      TZ: Europe/Zurich
+    volumes:
+      #- ${OC_CONFIG_DIR}/opencloud/csp.yaml:/etc/opencloud/csp.yaml
+      #- ${OC_CONFIG_DIR}/opencloud/banned-password-list.txt:/etc/opencloud/banned-password-list.txt
+      #- ${OC_CONFIG_DIR}/opencloud/proxy.yaml:/etc/opencloud/proxy.yaml
+      # configure the .env file to use own paths instead of docker internal volumes
+      - ${OC_CONFIG_DIR:-opencloud-config}:/etc/opencloud
+      - ${OC_DATA_DIR:-opencloud-data}:/var/lib/opencloud
+    networks:
+      - net
+      - swag_net
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: ${LOG_DRIVER:-local}
+      options:
+        max-size: "50m"
+        max-file: "5"
+    # run opencloud init to initialize a configuration file with random secrets
+    # it will fail on subsequent runs, because the config file already exists
+    # therefore we ignore the error and then start the opencloud server
+    command:
+      - "-c"
+      - "opencloud init || true; opencloud server"
+    entrypoint:
+      - /bin/sh
+    user: ${OC_CONTAINER_UID_GID:-1000:1000}
+
+  collaboration:
+    image: ${OC_DOCKER_IMAGE:-opencloudeu/opencloud-rolling}:${OC_DOCKER_TAG:-latest}
+    container_name: opencloud-collaboration
+    environment:
+      COLLABORATION_GRPC_ADDR: 0.0.0.0:9301
+      COLLABORATION_HTTP_ADDR: 0.0.0.0:9300
+      MICRO_REGISTRY: "nats-js-kv"
+      MICRO_REGISTRY_ADDRESS: "opencloud:9233"
+      COLLABORATION_WOPI_SRC: https://${WOPISERVER_DOMAIN:-wopi.example.com}
+      COLLABORATION_APP_NAME: "CollaboraOnline"
+      COLLABORATION_APP_PRODUCT: "Collabora"
+      COLLABORATION_APP_ADDR: https://${COLLABORA_DOMAIN:-collabora.example.com}
+      COLLABORATION_APP_ICON: https://${COLLABORA_DOMAIN:-collabora.example.com}/favicon.ico
+      # set to true only if your SWAG cert is self-signed / untrusted
+      COLLABORATION_APP_INSECURE: "${INSECURE:-false}"
+      COLLABORATION_CS3API_DATAGATEWAY_INSECURE: "${INSECURE:-false}"
+      COLLABORATION_LOG_LEVEL: ${LOG_LEVEL:-info}
+      OC_URL: https://${OC_DOMAIN:-cloud.example.com}
+      TZ: Europe/Zurich
+    volumes:
+      # configure the .env file to use own paths instead of docker internal volumes
+      - ${OC_CONFIG_DIR:-opencloud-config}:/etc/opencloud
+    networks:
+      - net
+      - swag_net
+    depends_on:
+      opencloud:
+        condition: service_started
+      collabora:
+        condition: service_healthy
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: ${LOG_DRIVER:-local}
+      options:
+        max-size: "50m"
+        max-file: "5"
+    command:
+      - "-c"
+      - "opencloud collaboration server"
+    entrypoint:
+      - /bin/sh
+    user: ${OC_CONTAINER_UID_GID:-1000:1000}
+
+  collabora:
+    image: collabora/code:26.04.3.1.1
+    container_name: opencloud-collabora
+    environment:
+      aliasgroup1: https://${WOPISERVER_DOMAIN:-wopi.example.com}
+      DONT_GEN_SSL_CERT: "YES"
+      extra_params: |
+        --o:ssl.enable=${COLLABORA_SSL_ENABLE:-false} \
+        --o:ssl.ssl_verification=${COLLABORA_SSL_VERIFICATION:-false} \
+        --o:ssl.termination=true \
+        --o:welcome.enable=false \
+        --o:net.frame_ancestors=${OC_DOMAIN:-cloud.example.com} \
+        --o:net.lok_allow.host[14]=${OC_DOMAIN:-cloud.example.com} \
+        --o:home_mode.enable=${COLLABORA_HOME_MODE:-false}
+      username: ${COLLABORA_ADMIN_USER:-admin}
+      password: ${COLLABORA_ADMIN_PASSWORD:-admin}
+      TZ: Europe/Zurich
+    networks:
+      - net
+      - swag_net
+    restart: unless-stopped
+    healthcheck:
+      # --use-env-vars makes the probe read extra_params, so it probes with
+      # the same http/https scheme the server actually runs with; without it
+      # the probe falls back to coolwsd.xml where ssl.enable defaults to true
+      test:
+        - "CMD"
+        - "/usr/bin/coolwsd"
+        - "--probe"
+        - "--use-env-vars"
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    security_opt:
+      - seccomp=unconfined
+      - apparmor:unconfined
+      - no-new-privileges:true
+    cap_add:
+      - SYS_ADMIN
+    logging:
+      driver: ${LOG_DRIVER:-local}
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  radicale:
+    image: ${RADICALE_DOCKER_IMAGE:-opencloudeu/radicale}:${RADICALE_DOCKER_TAG:-latest}
+    container_name: opencloud-radicale
+    environment:
+      TZ: Europe/Zurich
+    volumes:
+      #- ./config/radicale/config:/etc/radicale/config
+      - ${RADICALE_CONFIG_DIR:-radicale-config}:/etc/radicale/config
+      - ${RADICALE_DATA_DIR:-radicale-data}:/var/lib/radicale
+    networks:
+      - net
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: ${LOG_DRIVER:-local}
+      options:
+        max-size: "50m"
+        max-file: "5"
+    user: ${OC_CONTAINER_UID_GID:-1000:1000}
+
+networks:
+  net:
+    driver: bridge
+  swag_net:
+    external: true
